@@ -1,22 +1,21 @@
 "use client"
 
-import type React from "react"
-
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Calendar } from "@/components/ui/calendar"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { CalendarIcon, Loader2, Download } from "lucide-react"
-import { format } from "date-fns"
+import { CalendarIcon, Loader2, Download, ChevronLeft, ChevronRight, Check, SkipForward } from "lucide-react"
+import { format, parseISO } from "date-fns"
 import { cn } from "@/lib/utils"
-import { extractTextFromImage } from "@/lib/ocr-service"
-import { Progress } from "@/components/ui/progress"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import DocumentFlowGraph from "@/components/document-flow-graph"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Switch } from "@/components/ui/switch"
+import { toast } from "@/components/ui/use-toast"
+import { fetchDocument, saveDocumentAnnotations, getMaxDocumentId, type DocumentData } from "@/lib/api-service"
 
 // Sample datasets
 const SAMPLE_DATASETS = [
@@ -32,103 +31,58 @@ export default function ScreenshotAnnotator() {
   const [extractedText, setExtractedText] = useState<string>("")
   const [issuedDate, setIssuedDate] = useState<Date | undefined>()
   const [expirationDate, setExpirationDate] = useState<Date | undefined>()
-  const [isProcessing, setIsProcessing] = useState(false)
+  const [isLoading, setIsLoading] = useState(false)
   const [ocrConfidence, setOcrConfidence] = useState<number>(0)
   const [error, setError] = useState<string | null>(null)
+  const [status, setStatus] = useState<boolean>(false) // Added status state
 
-  // New state for dataset and document ID
+  // State for dataset and document ID
   const [selectedDataset, setSelectedDataset] = useState<string>("id_cards")
   const [documentId, setDocumentId] = useState<number>(1)
+  const [maxDocumentId, setMaxDocumentId] = useState<number>(0)
 
-  // Handle file upload
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (file) {
-      try {
-        setIsProcessing(true)
-        setError(null)
+  // Fetch document data when dataset or document ID changes
+  useEffect(() => {
+    loadDocument(selectedDataset, documentId)
 
-        // Read the file as data URL
-        const reader = new FileReader()
-        reader.onload = async (event) => {
-          const imageData = event.target?.result as string
-          setScreenshot(imageData)
+    // Update max document ID for the selected dataset
+    const maxId = getMaxDocumentId(selectedDataset)
+    setMaxDocumentId(maxId)
+  }, [selectedDataset, documentId])
 
-          try {
-            // Process the image with OCR
-            const result = await extractTextFromImage(imageData)
-            setExtractedText(result.text)
-            setOcrConfidence(result.confidence)
-
-            // Try to extract dates from the text
-            extractDatesFromText(result.text)
-          } catch (ocrError) {
-            console.error("OCR error:", ocrError)
-            setError("Failed to extract text from the image. Please try a clearer image.")
-          } finally {
-            setIsProcessing(false)
-          }
-        }
-        reader.onerror = () => {
-          setError("Failed to read the image file.")
-          setIsProcessing(false)
-        }
-        reader.readAsDataURL(file)
-      } catch (err) {
-        setError("An unexpected error occurred.")
-        setIsProcessing(false)
-      }
-    }
+  // Handle dataset change
+  const handleDatasetChange = (newDataset: string) => {
+    setSelectedDataset(newDataset)
+    setDocumentId(1) // Reset to first document when changing datasets
   }
 
-  // Extract dates from text
-  const extractDatesFromText = (text: string) => {
-    // Simple regex to find dates in format MM/DD/YYYY
-    const dateRegex = /(\d{1,2})[/-](\d{1,2})[/-](\d{4})/g
-    const dates = [...text.matchAll(dateRegex)]
+  // Load document from API
+  const loadDocument = async (datasetId: string, docId: number) => {
+    setIsLoading(true)
+    setError(null)
 
-    if (dates.length >= 1) {
-      // Try to find issued date by looking for "issue" or "issued" nearby
-      const issuedIndex = text.toLowerCase().indexOf("issue")
-      if (issuedIndex !== -1) {
-        // Find the closest date to the "issue" keyword
-        let closestDate = null
-        let minDistance = Number.MAX_VALUE
+    try {
+      const document = await fetchDocument(datasetId, docId)
 
-        for (const match of dates) {
-          const distance = Math.abs(match.index! - issuedIndex)
-          if (distance < minDistance) {
-            minDistance = distance
-            closestDate = match[0]
-          }
-        }
+      if (document) {
+        setScreenshot(document.screenshot)
+        setExtractedText(document.extractedText || "")
+        setOcrConfidence(document.ocrConfidence || 0)
+        setStatus(document.status) // Set status from document data
 
-        if (closestDate) {
-          const [month, day, year] = closestDate.split(/[/-]/).map(Number)
-          setIssuedDate(new Date(year, month - 1, day))
-        }
+        // Parse dates if they exist
+        setIssuedDate(document.issuedDate ? parseISO(document.issuedDate) : undefined)
+        setExpirationDate(document.expirationDate ? parseISO(document.expirationDate) : undefined)
+      } else {
+        resetForm()
+        setError(`Document ${docId} not found in ${datasetId} dataset.`)
       }
-
-      // Try to find expiration date by looking for "expir" nearby
-      const expireIndex = text.toLowerCase().indexOf("expir")
-      if (expireIndex !== -1) {
-        // Find the closest date to the "expir" keyword
-        let closestDate = null
-        let minDistance = Number.MAX_VALUE
-
-        for (const match of dates) {
-          const distance = Math.abs(match.index! - expireIndex)
-          if (distance < minDistance) {
-            minDistance = distance
-            closestDate = match[0]
-          }
-        }
-
-        if (closestDate) {
-          const [month, day, year] = closestDate.split(/[/-]/).map(Number)
-          setExpirationDate(new Date(year, month - 1, day))
-        }
-      }
+    } catch (err) {
+      console.error("Error loading document:", err)
+      setError("Failed to load document. Please try again.")
+      resetForm()
+    } finally {
+      setIsLoading(false)
     }
   }
 
@@ -138,7 +92,7 @@ export default function ScreenshotAnnotator() {
     setIssuedDate(undefined)
     setExpirationDate(undefined)
     setOcrConfidence(0)
-    setError(null)
+    setStatus(false)
   }
 
   // Handle download of annotated data
@@ -150,6 +104,7 @@ export default function ScreenshotAnnotator() {
       issuedDate: issuedDate ? format(issuedDate, "yyyy-MM-dd") : null,
       expirationDate: expirationDate ? format(expirationDate, "yyyy-MM-dd") : null,
       ocrConfidence,
+      status, // Include status in download
       timestamp: new Date().toISOString(),
     }
 
@@ -169,53 +124,179 @@ export default function ScreenshotAnnotator() {
     URL.revokeObjectURL(url)
   }
 
+  // Navigation functions
+  const goToPrevious = () => {
+    if (documentId > 1) {
+      setDocumentId(documentId - 1)
+    }
+  }
+
+  const goToNext = () => {
+    setDocumentId(documentId + 1)
+  }
+
+  // Confirm annotation
+  const confirmAnnotation = async () => {
+    if (!screenshot) {
+      toast({
+        title: "No screenshot to annotate",
+        description: "No screenshot available for this document.",
+        variant: "destructive",
+      })
+      return
+    }
+
+    setIsLoading(true)
+
+    try {
+      // Create document data object
+      const documentData: DocumentData = {
+        id: documentId,
+        datasetId: selectedDataset,
+        screenshot,
+        extractedText,
+        ocrConfidence,
+        issuedDate: issuedDate ? format(issuedDate, "yyyy-MM-dd") : null,
+        expirationDate: expirationDate ? format(expirationDate, "yyyy-MM-dd") : null,
+        status, // Include status in save data
+      }
+
+      // Save annotations
+      const success = await saveDocumentAnnotations(documentData)
+
+      if (success) {
+        toast({
+          title: "Annotation saved",
+          description: `Document ${documentId} in ${selectedDataset} dataset has been annotated.`,
+          variant: "default",
+        })
+
+        // Move to next document
+        goToNext()
+      } else {
+        toast({
+          title: "Failed to save",
+          description: "There was an error saving the annotations.",
+          variant: "destructive",
+        })
+      }
+    } catch (err) {
+      console.error("Error saving annotations:", err)
+      toast({
+        title: "Error",
+        description: "An unexpected error occurred while saving annotations.",
+        variant: "destructive",
+      })
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  // Skip current document
+  const skipDocument = () => {
+    toast({
+      title: "Document skipped",
+      description: `Skipped document ${documentId} in ${selectedDataset} dataset.`,
+      variant: "default",
+    })
+
+    // Move to next document
+    goToNext()
+  }
+
   return (
     <div className="flex flex-col h-screen overflow-hidden">
       {/* Top Horizontal Panel */}
       <Card className="rounded-none border-t-0 border-x-0">
         <CardContent className="p-4">
           <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
-            <div className="flex items-center gap-2 w-full sm:w-auto">
-              <Label htmlFor="dataset" className="whitespace-nowrap">
-                Dataset:
-              </Label>
-              <Select value={selectedDataset} onValueChange={setSelectedDataset}>
-                <SelectTrigger id="dataset" className="w-[180px]">
-                  <SelectValue placeholder="Select dataset" />
-                </SelectTrigger>
-                <SelectContent>
-                  {SAMPLE_DATASETS.map((dataset) => (
-                    <SelectItem key={dataset.id} value={dataset.id}>
-                      {dataset.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            {/* Download Button - Left */}
+            <div className="w-full sm:w-auto order-3 sm:order-1">
+              <Button onClick={handleDownload} disabled={!screenshot || isLoading} className="w-full">
+                <Download className="mr-2 h-4 w-4" />
+                Download Annotations
+              </Button>
             </div>
 
-            <div className="flex items-center gap-2 w-full sm:w-auto">
-              <Label htmlFor="document-id" className="whitespace-nowrap">
-                Document ID:
-              </Label>
-              <Input
-                id="document-id"
-                type="number"
-                min="1"
-                value={documentId}
-                onChange={(e) => setDocumentId(Number.parseInt(e.target.value) || 1)}
-                className="w-[100px]"
-              />
+            {/* Dataset and Document ID - Middle */}
+            <div className="flex flex-col sm:flex-row items-center gap-4 w-full sm:w-auto order-1 sm:order-2">
+              <div className="flex items-center gap-2 w-full sm:w-auto">
+                <Label htmlFor="dataset" className="whitespace-nowrap">
+                  Dataset:
+                </Label>
+                <Select value={selectedDataset} onValueChange={handleDatasetChange}>
+                  <SelectTrigger id="dataset" className="w-[180px]">
+                    <SelectValue placeholder="Select dataset" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SAMPLE_DATASETS.map((dataset) => (
+                      <SelectItem key={dataset.id} value={dataset.id}>
+                        {dataset.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="flex items-center gap-2 w-full sm:w-auto">
+                <Label htmlFor="document-id" className="whitespace-nowrap">
+                  Document ID:
+                </Label>
+                <Input
+                  id="document-id"
+                  type="number"
+                  min="1"
+                  value={documentId}
+                  onChange={(e) => setDocumentId(Number.parseInt(e.target.value) || 1)}
+                  className="w-[100px]"
+                />
+              </div>
             </div>
 
-            <Button onClick={handleDownload} disabled={!screenshot || isProcessing} className="w-full sm:w-auto">
-              <Download className="mr-2 h-4 w-4" />
-              Download Annotations
-            </Button>
+            {/* Navigation and Action Buttons - Right */}
+            <div className="flex items-center gap-2 order-2 sm:order-3 w-full sm:w-auto">
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={goToPrevious}
+                  disabled={documentId <= 1 || isLoading}
+                  title="Previous document"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={goToNext}
+                  disabled={isLoading || (documentId >= maxDocumentId && maxDocumentId > 0)}
+                  title="Next document"
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+              </div>
+
+              <div className="flex items-center gap-1 ml-2">
+                <Button
+                  variant="default"
+                  onClick={confirmAnnotation}
+                  disabled={!screenshot || isLoading}
+                  className="bg-green-600 hover:bg-green-700"
+                  title="Confirm annotation"
+                >
+                  <Check className="mr-2 h-4 w-4" />
+                  Confirm
+                </Button>
+                <Button variant="outline" onClick={skipDocument} disabled={isLoading} title="Skip this document">
+                  <SkipForward className="mr-2 h-4 w-4" />
+                  Skip
+                </Button>
+              </div>
+            </div>
           </div>
         </CardContent>
       </Card>
 
-      {/* Main Content Area - Fills remaining height */}
       <div className="flex-1 grid grid-rows-2 overflow-hidden">
         {/* Top Row - Screenshot, Text, and Editor */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 overflow-hidden">
@@ -225,28 +306,18 @@ export default function ScreenshotAnnotator() {
               <CardTitle>Screenshot</CardTitle>
             </CardHeader>
             <CardContent className="p-2 overflow-auto h-[calc(100%-48px)]">
-              {screenshot ? (
+              {isLoading ? (
+                <div className="flex flex-col items-center justify-center h-full">
+                  <Loader2 className="h-8 w-8 animate-spin mb-4" />
+                  <p>Loading screenshot...</p>
+                </div>
+              ) : screenshot ? (
                 <div className="relative w-full border rounded-md overflow-hidden">
-                  <img src={screenshot || "/placeholder.svg"} alt="Uploaded Screenshot" className="w-full h-auto" />
-                  {isProcessing && (
-                    <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
-                      <div className="text-center">
-                        <Loader2 className="h-8 w-8 animate-spin text-white mx-auto" />
-                        <p className="text-white mt-2">Processing image...</p>
-                      </div>
-                    </div>
-                  )}
+                  <img src={screenshot || "/placeholder.svg"} alt="Document Screenshot" className="w-full h-auto" />
                 </div>
               ) : (
-                <div className="flex flex-col items-center justify-center w-full h-full border-2 border-dashed rounded-md p-4">
-                  <p className="text-muted-foreground mb-4">Upload a screenshot to annotate</p>
-                  <Input
-                    type="file"
-                    accept="image/*"
-                    onChange={handleFileUpload}
-                    className="max-w-xs"
-                    disabled={isProcessing}
-                  />
+                <div className="flex items-center justify-center h-full bg-muted rounded-md">
+                  <p className="text-muted-foreground">No screenshot yet</p>
                 </div>
               )}
 
@@ -254,12 +325,6 @@ export default function ScreenshotAnnotator() {
                 <Alert variant="destructive" className="mt-4">
                   <AlertDescription>{error}</AlertDescription>
                 </Alert>
-              )}
-
-              {screenshot && (
-                <Button variant="outline" className="mt-4" onClick={resetForm} disabled={isProcessing}>
-                  Clear Screenshot
-                </Button>
               )}
             </CardContent>
           </Card>
@@ -270,26 +335,17 @@ export default function ScreenshotAnnotator() {
               <CardTitle>Extracted Text</CardTitle>
             </CardHeader>
             <CardContent className="p-2 overflow-hidden h-[calc(100%-48px)]">
-              {isProcessing ? (
+              {isLoading ? (
                 <div className="flex flex-col items-center justify-center h-full bg-muted rounded-md p-4">
                   <Loader2 className="h-8 w-8 animate-spin mb-4" />
-                  <p className="text-center">Extracting text from image...</p>
-                  <p className="text-center text-sm text-muted-foreground mt-2">This may take a few moments</p>
+                  <p className="text-center">Loading extracted text...</p>
                 </div>
               ) : extractedText ? (
                 <div className="h-full flex flex-col">
                   <pre className="whitespace-pre-wrap bg-muted p-4 rounded-md text-sm flex-1 overflow-auto">
                     {extractedText}
                   </pre>
-                  {ocrConfidence > 0 && (
-                    <div className="mt-2 w-full space-y-2">
-                      <div className="flex justify-between text-sm">
-                        <span>OCR Confidence</span>
-                        <span>{Math.round(ocrConfidence)}%</span>
-                      </div>
-                      <Progress value={ocrConfidence} className="h-2" />
-                    </div>
-                  )}
+                  {/* OCR confidence bar removed */}
                 </div>
               ) : (
                 <div className="flex items-center justify-center h-full bg-muted rounded-md">
@@ -317,7 +373,7 @@ export default function ScreenshotAnnotator() {
                           "w-full justify-start text-left font-normal",
                           !issuedDate && "text-muted-foreground",
                         )}
-                        disabled={isProcessing}
+                        disabled={isLoading}
                       >
                         <CalendarIcon className="mr-2 h-4 w-4" />
                         {issuedDate ? format(issuedDate, "PPP") : "Select date"}
@@ -340,7 +396,7 @@ export default function ScreenshotAnnotator() {
                           "w-full justify-start text-left font-normal",
                           !expirationDate && "text-muted-foreground",
                         )}
-                        disabled={isProcessing}
+                        disabled={isLoading}
                       >
                         <CalendarIcon className="mr-2 h-4 w-4" />
                         {expirationDate ? format(expirationDate, "PPP") : "Select date"}
@@ -352,7 +408,18 @@ export default function ScreenshotAnnotator() {
                   </Popover>
                 </div>
 
-                <Button className="w-full mt-6" disabled={!screenshot || isProcessing}>
+                {/* Status Toggle */}
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="status-toggle" className="font-medium">
+                    Status
+                  </Label>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-muted-foreground">{status ? "Active" : "Inactive"}</span>
+                    <Switch id="status-toggle" checked={status} onCheckedChange={setStatus} disabled={isLoading} />
+                  </div>
+                </div>
+
+                <Button className="w-full mt-6" onClick={confirmAnnotation} disabled={!screenshot || isLoading}>
                   Save Annotations
                 </Button>
               </div>
@@ -364,7 +431,7 @@ export default function ScreenshotAnnotator() {
         <div className="overflow-hidden">
           <Card className="h-full rounded-none border-0 shadow-none">
             <CardHeader className="py-2 px-4">
-              <CardTitle>Document Relationship Graph</CardTitle>
+              <CardTitle>Friday Knowledge Graph</CardTitle>
             </CardHeader>
             <CardContent className="p-2 h-[calc(100%-48px)] overflow-hidden">
               <div className="h-full w-full">

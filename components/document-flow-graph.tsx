@@ -151,7 +151,7 @@ export default function DocumentFlowGraph() {
         <Background color="#aaa" gap={16} />
         <Panel position="top-right">
           <div className="bg-white p-2 rounded-md shadow-sm text-sm">
-            <strong>Document Relationship Graph</strong>
+            <strong>Friday Knowledge Graph</strong>
           </div>
         </Panel>
       </ReactFlow>
